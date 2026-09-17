@@ -33,6 +33,11 @@ http {
         default  '';
     }
 
+    # The stock format logs Railway's CGNAT edge, which rotates per request and
+    # identifies nobody.
+    log_format railway '$real_client_ip - $remote_user [$time_local] "$request" '
+                       '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+
     map $http_x_forwarded_proto $hsts_header {
         https    'max-age=31536000; includeSubDomains';
         default  '';
@@ -43,7 +48,7 @@ http {
         listen      [::]:${PORT} default_server;
         root        /var/www/shaarli;
 
-        access_log  /var/log/nginx/shaarli.access.log;
+        access_log  /var/log/nginx/shaarli.access.log railway;
         error_log   /var/log/nginx/shaarli.error.log;
 
         # Collapse the header to the real client before PHP sees it: Shaarli's
