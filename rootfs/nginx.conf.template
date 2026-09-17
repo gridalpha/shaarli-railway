@@ -1,0 +1,108 @@
+user nginx nginx;
+daemon off;
+worker_processes 4;
+pid /var/run/nginx.pid;
+
+load_module modules/ngx_http_headers_more_filter_module.so;
+
+events {
+    worker_connections  768;
+}
+
+http {
+    include            mime.types;
+    default_type       application/octet-stream;
+    keepalive_timeout  20;
+
+    client_max_body_size 100m;
+
+    index index.html index.php;
+
+    # Railway's edge overwrites a client-supplied X-Forwarded-For, so the leftmost
+    # entry is the true client and is not forgeable. Both REMOTE_ADDR (100.64.0.0/10)
+    # and the edge's own XFF entry (152.233.0.0/17) rotate per request.
+    map $http_x_forwarded_for $real_client_ip {
+        '~^\s*(?P<first>[^,\s]+)'  $first;
+        default                    $remote_addr;
+    }
+
+    # Shaarli reads $_SERVER['HTTPS']; the edge only forwards the scheme in a header.
+    # Empty for the anonymous health prober, which speaks plain HTTP.
+    map $http_x_forwarded_proto $https_flag {
+        https    on;
+        default  '';
+    }
+
+    map $http_x_forwarded_proto $hsts_header {
+        https    'max-age=31536000; includeSubDomains';
+        default  '';
+    }
+
+    server {
+        listen      ${PORT} default_server;
+        listen      [::]:${PORT} default_server;
+        root        /var/www/shaarli;
+
+        access_log  /var/log/nginx/shaarli.access.log;
+        error_log   /var/log/nginx/shaarli.error.log;
+
+        # Collapse the header to the real client before PHP sees it: Shaarli's
+        # session protection keys on REMOTE_ADDR plus the whole XFF string, so a
+        # rotating entry logs the user out on their very next request.
+        more_set_input_headers 'X-Forwarded-For: $real_client_ip';
+
+        add_header X-Content-Type-Options    nosniff always;
+        add_header X-Frame-Options           SAMEORIGIN always;
+        add_header Referrer-Policy           strict-origin-when-cross-origin always;
+        add_header Strict-Transport-Security $hsts_header always;
+
+        location = /healthz {
+            # Real dependency probe: asserts the volume is mounted, writable and
+            # carries a seeded configuration. Anonymous, and unaffected by
+            # privacy.force_login.
+            access_log off;
+            fastcgi_pass unix:/var/run/php-fpm.sock;
+            # fastcgi.conf with SCRIPT_FILENAME pinned, generated in the Dockerfile:
+            # re-declaring the param after the include would send the key twice.
+            include      fastcgi_healthz.conf;
+        }
+
+        location ~* \.(?:ico|css|js|gif|jpe?g|png|ttf|oet|woff2?)$ {
+            # cache static assets
+            expires    max;
+            add_header Pragma public;
+            add_header Cache-Control "public, must-revalidate, proxy-revalidate";
+            # a location declaring add_header drops every inherited one
+            add_header X-Content-Type-Options    nosniff always;
+            add_header X-Frame-Options           SAMEORIGIN always;
+            add_header Referrer-Policy           strict-origin-when-cross-origin always;
+            add_header Strict-Transport-Security $hsts_header always;
+        }
+
+        location = /favicon.ico {
+            # serve the Shaarli favicon from its custom location
+            alias /var/www/shaarli/images/favicon.ico;
+        }
+
+        location /doc/html/ {
+            default_type "text/html";
+            try_files $uri $uri/ $uri.html =404;
+        }
+
+        location / {
+            # Slim - rewrite URLs & do NOT serve static files through this location
+            try_files _ /index.php$is_args$args;
+        }
+
+        location ~ index\.php$ {
+            # Slim - split URL path into (script_filename, path_info)
+            try_files $uri =404;
+            fastcgi_split_path_info ^(index.php)(/.+)$;
+
+            # filter and proxy PHP requests to PHP-FPM
+            fastcgi_pass   unix:/var/run/php-fpm.sock;
+            fastcgi_index  index.php;
+            include        fastcgi.conf;
+        }
+    }
+}

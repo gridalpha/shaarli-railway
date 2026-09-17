@@ -1,0 +1,5 @@
+#!/bin/sh
+# Railway SIGTERMs the entrypoint on every redeploy. Plain s6-svscan ignores the
+# signal unless this handler exists, so without it nginx and php-fpm are SIGKILLed
+# mid-write against a flat-file datastore.
+exec /usr/bin/s6-svscanctl -t /etc/services.d
